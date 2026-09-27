@@ -106,3 +106,33 @@ def test_protected_occluder_blocks_hit_test():
     fr = W.frame_rect(tray)
     policy = W.WindowPolicy(blocked_classes=["Shell_TrayWnd"])
     assert W.window_at(fr.x + fr.w * 0.5, fr.y + fr.h * 0.5, policy) is None
+
+
+def test_actuator_drags_and_snaps_a_real_window(target):
+    """Real Win32Ops: motion through the actuator mailbox moves the spawned
+    test window by exactly the hand delta, and a snap lands flush on the
+    visible frame. The cursor is never driven."""
+    import numpy as np
+    from vector.config import Config
+    from vector.desktop.actuator import Actuator, Win32Ops
+    from vector.desktop.commands import Command, Motion
+    hwnd, _ = target
+    W.set_frame(hwnd, Rect(300, 200, 640, 420))
+    _wait(lambda: W.frame_rect(hwnd) == Rect(300, 200, 640, 420))
+    act = Actuator(Config(), Win32Ops())
+    act.arm()
+    t = time.perf_counter()
+    act.submit(Command("drag_begin", act.generation, t, 1.0, 1,
+                       {"hwnd": hwnd, "anchor": np.array([400.0, 300]), "point": np.array([400.0, 300])}))
+    for i in range(90):
+        now = time.perf_counter()
+        act.mailbox.put(Motion(now, drag_point=np.array([520.0, 360])))
+        act.tick(now)
+        time.sleep(1 / 120)
+    assert _wait(lambda: W.frame_rect(hwnd).x == 420 and W.frame_rect(hwnd).y == 260), W.frame_rect(hwnd)
+    act.submit(Command("drag_end", act.generation, time.perf_counter(), 1.0, 1, {}))
+    snap_rect = Rect(0, 0, 700, 500)
+    act.submit(Command("set_frame", act.generation, time.perf_counter(), 1.0, 1,
+                       {"hwnd": hwnd, "rect": snap_rect}))
+    act.tick(time.perf_counter())
+    assert _wait(lambda: W.frame_rect(hwnd) == snap_rect), W.frame_rect(hwnd)
