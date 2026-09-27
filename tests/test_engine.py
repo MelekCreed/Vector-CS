@@ -337,3 +337,25 @@ def test_interaction_owner_is_exclusive_during_drag():
     sc.key("L", 1.25, P("open", x=0.45, label="Left")).key("L", 2.5, P("open", x=0.45, label="Left"))
     ev, _ = run(pipe, sc)
     assert "swipe" not in kinds(ev)
+
+
+def test_pinch_onset_does_not_move_cursor_or_window():
+    """Regression: switching the pointer source at pinch onset (fingertip ->
+    palm) once made grabbed windows glide ~360 px. The anchored pointer must be
+    continuous: holding a pinch still keeps the cursor still, and a purely
+    horizontal drag moves the window horizontally only."""
+    pipe = make(active=True)
+    sc = Scenario(noise=0.0)
+    sc.key("R", 0, P("point", x=0.5, y=0.62)).key("R", 0.8, P("point", x=0.5, y=0.62))
+    sc.key("R", 0.85, P("pinch", x=0.5, y=0.62)).key("R", 1.6, P("pinch", x=0.5, y=0.62))
+    sc.key("R", 2.4, P("pinch", x=0.62, y=0.62)).key("R", 2.8, P("pinch", x=0.62, y=0.62))
+    ev, snaps = run(pipe, sc)
+    before = next(s.cursor for s in reversed(snaps) if s.t < 0.8)
+    held = [s.cursor for s in snaps if 1.0 < s.t < 1.6]
+    assert max(np.linalg.norm(c - before) for c in held) < 12
+    drag = [s.drag_point for s in snaps if s.drag_point is not None]
+    grabbed_at = next(e.data["point"] for e in ev if e.kind == "pinch_start")
+    assert np.linalg.norm(drag[0] - grabbed_at) < 40        # no jump when the drag begins
+    dx = drag[-1][0] - drag[0][0]
+    dy = drag[-1][1] - drag[0][1]
+    assert dx > 150 and abs(dy) < 0.08 * dx

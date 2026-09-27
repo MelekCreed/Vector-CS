@@ -52,7 +52,7 @@ class Feedback:
     lock_frame: Rect | None = None
     lock_state: str = ""                # pinch | grab | drag | resize | ""
     lock_title: str = ""
-    throw_trail: tuple | None = None    # (t, start_xy, end_xy, label)
+    throw_trail: tuple | None = None    # (t, start_xy, end_xy, label, target Rect | None)
     toast: tuple | None = None          # (t, text)
     draw_ops: list = field(default_factory=list)
     history: list[HistoryItem] = field(default_factory=list)
@@ -229,7 +229,10 @@ class IntentEngine:
             self._cmd(dec.action, ev.t, ev.interaction, ttl=1.0, hwnd=h)
         start = tuple(ev.data["release_point"])
         end = dec.projected or start
-        self.fb.throw_trail = (ev.t, start, end, dec.action.replace("_", " "))
+        target = dec.rect
+        if target is None and dec.action == "maximize" and dec.monitor is not None:
+            target = dec.monitor.work
+        self.fb.throw_trail = (ev.t, start, end, dec.action.replace("_", " "), target)
         self._record(ev, f"throw -> {dec.action}", True)
 
     def _resize_start(self, ev: GestureEvent) -> None:

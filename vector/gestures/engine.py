@@ -60,6 +60,8 @@ class HandCtx:
     hold_pose: Pose | None = None
     hold_fired: bool = False
     pose_hist: list = field(default_factory=list)
+    tip_hist: History = field(default_factory=lambda: History(span_s=0.6))    # index tip, norm
+    palm_hist: History = field(default_factory=lambda: History(span_s=0.6))   # palm, norm
 
 
 @dataclass
@@ -100,6 +102,9 @@ class GestureEngine:
         self._last_seen_hand_t = 0.0
         self._cursor_lock: np.ndarray | None = None
         self.primary_id: int | None = None
+        # While pinched, the pointer is "fingertip at pinch onset + palm motion
+        # since": continuous with the pre-pinch cursor, immune to finger curl.
+        self._anchor: tuple[np.ndarray, np.ndarray] | None = None
         self._g = g
 
     # ------------------------------------------------------------------ utils
@@ -189,6 +194,8 @@ class GestureEngine:
                 # stale data (no clicks, no throws, no pose changes).
                 ctx.pinch_rose = ctx.pinch_fell = False
                 continue
+            ctx.tip_hist.push(t, np.array([f.index_tip[0] / f.aspect, f.index_tip[1]]))
+            ctx.palm_hist.push(t, np.array([f.palm_center[0] / f.aspect, f.palm_center[1]]))
             s = ctx.scale(f.hand_scale)
             pos_hl = f.palm_center / max(1e-3, s)
             ctx.pos_hl.push(t, pos_hl)
@@ -236,6 +243,7 @@ class GestureEngine:
             pid = None
         if pid != self.primary_id:
             self.mapper.reset()
+            self._anchor = None
         self.primary_id = pid
 
     @property
@@ -317,7 +325,11 @@ class GestureEngine:
     def _cursor_point(self, ctx: HandCtx, source: str) -> np.ndarray:
         """Hand point in normalised image coords (what the cursor region uses)."""
         f = ctx.f
-        p = {"index": f.index_tip, "palm": f.palm_center, "pinch": f.pinch_point}[source]
+        if source == "anchored" and self._anchor is not None:
+            tip0, palm0 = self._anchor
+            return tip0 + (np.array([f.palm_center[0] / f.aspect, f.palm_center[1]]) - palm0)
+        p = {"index": f.index_tip, "palm": f.palm_center, "pinch": f.pinch_point,
+             "anchored": f.index_tip}[source]
         return np.array([p[0] / f.aspect, p[1]])
 
     def _update_primary(self, t: float, events: list) -> None:
@@ -329,10 +341,14 @@ class GestureEngine:
         mode_pinch = it is not None and it.kind in ("pinch", "drag")
 
         # ---- cursor
-        if self.draw_mode and self.cfg.draw.pen_down_pose == "pinch":
-            src = "pinch"
-        else:
-            src = "palm" if (mode_pinch or (it and it.kind == "resize")) else "index"
+        if ctx.pinch_on and self._anchor is None:
+            t_rw = t - self.cfg.cursor.pinch_rewind_s
+            tip0, palm0 = ctx.tip_hist.at(t_rw), ctx.palm_hist.at(t_rw)
+            if tip0 is not None and palm0 is not None:
+                self._anchor = (np.asarray(tip0).copy(), np.asarray(palm0).copy())
+        elif not ctx.pinch_on and not (it and it.kind == "resize"):
+            self._anchor = None
+        src = "anchored" if self._anchor is not None else "index"
         cursor = self.mapper.update(self._cursor_point(ctx, src), t, source=src,
                                     engaged=mode_pinch or bool(it and it.kind in ("resize", "draw")))
 
