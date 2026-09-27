@@ -31,6 +31,8 @@ class HandObservation:
     t: float
     aspect: float                   # width / height of the source image
     stale: bool = False             # carried through a brief tracking dropout
+    label_confidence: float = 1.0   # how settled the handedness vote is (0..1)
+    age_s: float = 0.0              # how long this identity has been tracked
 
 
 @dataclass
@@ -53,6 +55,8 @@ class HandFeatures:
     roll: float                     # radians, rotation of the palm in the image plane
     finger_spread: float            # mean angle between adjacent fingers (radians)
     stale: bool = False
+    age_s: float = 0.0
+    aspect: float = 4 / 3           # image width / height (iso x = norm x * aspect)
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(2))  # hand-lengths / s
     speed: float = 0.0
 
@@ -62,30 +66,45 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / n if n > 1e-9 else v * 0
 
 
-def _angle(a: np.ndarray, b: np.ndarray) -> float:
-    a, b = _unit(a), _unit(b)
-    return float(np.arccos(np.clip(np.dot(a, b), -1.0, 1.0)))
+def _clip01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+# Joint chains for the batched bend computation (wrist -> ... -> tip).
+_LONG_CHAINS = np.array([[L.WRIST, *L.FINGERS[f]] for f in ("index", "middle", "ring", "pinky")])
+_THUMB_CHAIN = np.array(L.FINGERS["thumb"])
+
+
+def _bends(world: np.ndarray, chains: np.ndarray) -> np.ndarray:
+    """Angle (rad) between consecutive segments along each chain, batched."""
+    pts = world[chains]                          # (n, k, 3)
+    seg = np.diff(pts, axis=1)                   # (n, k-1, 3)
+    seg /= np.linalg.norm(seg, axis=2, keepdims=True) + 1e-9
+    cos = np.einsum("nki,nki->nk", seg[:, :-1], seg[:, 1:])
+    return np.arccos(np.clip(cos, -1.0, 1.0))    # (n, k-2)
+
+
+def finger_extensions(world: np.ndarray) -> dict[str, float]:
+    """Straightness from bend angles along each finger chain: 0 rad of total
+    bend = fully straight (1.0); ~pi of bend = fully curled (0.0)."""
+    b = _bends(world, _LONG_CHAINS)              # (4, 3): mcp, pip, dip
+    # MCP bend counts less: fingers are often slightly bent at the knuckle while extended.
+    total = 0.5 * b[:, 0] + b[:, 1] + b[:, 2]
+    ext = np.clip(1.0 - (total - 0.35) / 2.0, 0.0, 1.0)
+    out = dict(zip(("index", "middle", "ring", "pinky"), map(float, ext)))
+
+    tb = _bends(world, _THUMB_CHAIN[None])[0]
+    straight = _clip01(1.0 - float(tb.sum()) / 1.6)
+    # A straight thumb can still be folded across the palm, so also require
+    # the tip to be far from the pinky knuckle (tucked ~1x palm width, out ~2x).
+    palm_w = float(np.linalg.norm(world[L.INDEX_MCP] - world[L.PINKY_MCP])) + 1e-9
+    away = float(np.linalg.norm(world[L.THUMB_TIP] - world[L.PINKY_MCP])) / palm_w
+    out["thumb"] = straight ** 0.5 * _clip01((away - 1.15) / 0.6)
+    return out
 
 
 def finger_extension(world: np.ndarray, finger: str) -> float:
-    """Straightness from the bend angles along the finger chain.
-    0 rad of total bend = fully straight (1.0); ~pi of bend = fully curled (0.0)."""
-    j = L.FINGERS[finger]
-    if finger == "thumb":
-        chain = [L.WRIST if False else j[0], j[1], j[2], j[3]]
-        bends = [_angle(world[chain[i + 1]] - world[chain[i]], world[chain[i + 2]] - world[chain[i + 1]])
-                 for i in range(2)]
-        straight = 1.0 - np.clip(sum(bends) / 1.6, 0.0, 1.0)
-        # A straight thumb can still be tucked across the palm; require it to point away.
-        palm_w = np.linalg.norm(world[L.INDEX_MCP] - world[L.PINKY_MCP]) + 1e-9
-        away = np.linalg.norm(world[L.THUMB_TIP] - world[L.INDEX_MCP]) / palm_w
-        return float(straight * np.clip((away - 0.55) / 0.5, 0.0, 1.0))
-    chain = [L.WRIST, j[0], j[1], j[2], j[3]]
-    bends = [_angle(world[chain[i + 1]] - world[chain[i]], world[chain[i + 2]] - world[chain[i + 1]])
-             for i in range(3)]
-    # MCP bend counts less: fingers are often slightly bent at the knuckle while extended.
-    total = 0.5 * bends[0] + bends[1] + bends[2]
-    return float(1.0 - np.clip((total - 0.35) / 2.0, 0.0, 1.0))
+    return finger_extensions(world)[finger]
 
 
 def compute(obs: HandObservation) -> HandFeatures:
@@ -95,16 +114,13 @@ def compute(obs: HandObservation) -> HandFeatures:
     palm_len_w = float(np.linalg.norm(world[L.MIDDLE_MCP] - world[L.WRIST])) or NOMINAL_PALM_M
     # Pixels-per-metre from the *least* foreshortened palm segment: segments
     # tilted away from the camera look short in the image but not in world space.
-    segs = [(L.WRIST, L.INDEX_MCP), (L.WRIST, L.MIDDLE_MCP), (L.WRIST, L.PINKY_MCP),
-            (L.INDEX_MCP, L.PINKY_MCP)]
-    ratios = []
-    for a, b in segs:
-        wl = np.linalg.norm(world[a] - world[b])
-        if wl > 1e-4:
-            ratios.append(np.linalg.norm(iso[a] - iso[b]) / wl)
-    hand_scale = float(max(ratios) * palm_len_w) if ratios else 0.2
+    a_idx, b_idx = [0, 0, 0, 5], [5, 9, 17, 17]
+    wl = np.linalg.norm(world[a_idx] - world[b_idx], axis=1)
+    il = np.linalg.norm(iso[a_idx] - iso[b_idx], axis=1)
+    ok = wl > 1e-4
+    hand_scale = float((il[ok] / wl[ok]).max() * palm_len_w) if ok.any() else 0.2
 
-    ext = {f: finger_extension(world, f) for f in L.FINGER_NAMES}
+    ext = finger_extensions(world)
     pinch = float(np.linalg.norm(world[L.THUMB_TIP] - world[L.INDEX_TIP]) / palm_len_w)
     mpinch = float(np.linalg.norm(world[L.THUMB_TIP] - world[L.MIDDLE_TIP]) / palm_len_w)
 
@@ -119,8 +135,9 @@ def compute(obs: HandObservation) -> HandFeatures:
     across = iso[L.PINKY_MCP] - iso[L.INDEX_MCP]
     roll = float(np.arctan2(across[1], across[0]))
 
-    dirs = [_unit(world[L.FINGERS[f][3]] - world[L.FINGERS[f][0]]) for f in ("index", "middle", "ring", "pinky")]
-    spread = float(np.mean([_angle(dirs[i], dirs[i + 1]) for i in range(3)]))
+    dirs = world[[8, 12, 16, 20]] - world[[5, 9, 13, 17]]
+    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-9
+    spread = float(np.arccos(np.clip(np.einsum("ij,ij->i", dirs[:-1], dirs[1:]), -1, 1)).mean())
 
     palm_center = iso[list(L.PALM)].mean(axis=0)
     return HandFeatures(
@@ -129,4 +146,4 @@ def compute(obs: HandObservation) -> HandFeatures:
         pinch_point=(iso[L.THUMB_TIP] + iso[L.INDEX_TIP]) / 2,
         hand_scale=hand_scale, extension=ext, pinch_ratio=pinch, middle_pinch_ratio=mpinch,
         palm_normal=n, palm_facing=facing, upright=upright, roll=roll, finger_spread=spread,
-        stale=obs.stale)
+        stale=obs.stale, age_s=obs.age_s, aspect=obs.aspect)
