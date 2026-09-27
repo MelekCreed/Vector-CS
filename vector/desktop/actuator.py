@@ -124,6 +124,8 @@ class Actuator:
         self._qlock = threading.Lock()
         self._gen = 0
         self._armed = False
+        self._latched = False            # emergency stop: arm() refuses until unlatch()
+        self._tick_lock = threading.RLock()
         self._cursor = CriticalSpring(cfg.cursor.spring_hz)
         self._drag_spring = CriticalSpring(cfg.cursor.spring_hz)
         self._resize_spring = CriticalSpring(cfg.cursor.spring_hz * 0.8)
@@ -148,12 +150,33 @@ class Actuator:
     def armed(self) -> bool:
         return self._armed
 
-    def arm(self) -> None:
-        self._armed = True
+    @property
+    def latched(self) -> bool:
+        return self._latched
 
-    def disarm(self, reason: str = "") -> None:
+    def arm(self) -> bool:
+        """Returns False (and stays disarmed) while an emergency stop is latched,
+        so no other thread can race the failsafe back into an armed state."""
+        with self._tick_lock:
+            if self._latched:
+                return False
+            self._armed = True
+            return True
+
+    def unlatch(self) -> None:
+        with self._tick_lock:
+            self._latched = False
+
+    def disarm(self, reason: str = "", latch: bool = False) -> None:
         """Instantly stop everything: bump the generation (invalidating every
-        queued or in-flight command), drop motion, release buttons."""
+        queued or in-flight command), drop motion, release buttons. Serialised
+        with tick() so a half-finished tick can't move a window afterwards."""
+        with self._tick_lock:
+            self._disarm_locked(reason, latch)
+
+    def _disarm_locked(self, reason: str, latch: bool) -> None:
+        if latch:
+            self._latched = True
         self._gen += 1
         self._armed = False
         with self._qlock:
@@ -206,6 +229,10 @@ class Actuator:
 
     # --------------------------------------------------------------- tick
     def tick(self, now: float) -> None:
+        with self._tick_lock:
+            self._tick(now)
+
+    def _tick(self, now: float) -> None:
         dt = 1 / self.rate_hz if self._last_tick is None else min(0.05, max(1e-4, now - self._last_tick))
         self._last_tick = now
         self._drain(now)

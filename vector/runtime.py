@@ -92,11 +92,12 @@ class VisionWorker(threading.Thread):
         """Called from the keyboard-hook thread. Flag first, then disarm, so the
         vision thread can never re-arm the actuator in between."""
         self.disabled = True
-        self.actuator.disarm("failsafe")
+        self.actuator.disarm("failsafe", latch=True)
 
     def rearm(self) -> None:
         def _do():
             self.disabled = False
+            self.actuator.unlatch()
             nxt = SystemState.SLEEPING if self.cfg.activation.require_activation else SystemState.ACTIVE
             self.pipeline.engine.set_system(nxt, time.perf_counter())
         self.request(_do)

@@ -189,3 +189,16 @@ def test_set_frame_on_maximized_restores_first_then_maximizes_on_new_monitor(act
         a.tick(0.01 + i / 120)
     k = ops.kinds()
     assert k.index("restore") < k.index("set_frame") < k.index("maximize")
+
+
+def test_emergency_latch_blocks_rearm_until_unlatched(act):
+    """Race guard: after Esc Esc, a vision thread that already decided to arm
+    must not succeed; only an explicit unlatch (Ctrl+Alt+V) allows arming."""
+    a, ops = act
+    a.disarm("esc esc", latch=True)
+    assert a.arm() is False and not a.armed
+    cmd(a, "keys", t=0.0, chord="media_next")
+    a.tick(0.01)
+    assert "keys" not in ops.kinds()
+    a.unlatch()
+    assert a.arm() is True and a.armed
