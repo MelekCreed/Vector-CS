@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Secrets / machine specific
+.env
+.env.*
+*.pem
+*.key
+user_config.json
+
+# Models (downloaded at runtime by scripts/fetch_model.py)
+models/
+*.task
+*.pt
+*.onnx
+
+# Personal data: webcam captures, gesture recordings, exports
+data/
+recordings/
+captures/
+exports/
+*.mp4
+*.avi
+*.npz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,27 @@
+"""MediaPipe hand landmark indices and skeleton topology."""
+
+WRIST = 0
+THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP = 1, 2, 3, 4
+INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
+RING_MCP, RING_PIP, RING_DIP, RING_TIP = 13, 14, 15, 16
+PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP = 17, 18, 19, 20
+
+FINGERS = {
+    "thumb": (THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP),
+    "index": (INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP),
+    "middle": (MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP),
+    "ring": (RING_MCP, RING_PIP, RING_DIP, RING_TIP),
+    "pinky": (PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP),
+}
+FINGER_NAMES = tuple(FINGERS)
+PALM = (WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
+
+CONNECTIONS = (
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17),
+)
