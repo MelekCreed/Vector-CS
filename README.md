@@ -243,7 +243,7 @@ launch.bat --debug
 - **First launch** runs calibration: raise the hand you point with, then point at the four targets and hold still on each.
 - **To start controlling:** raise one open palm, facing the camera, and hold it still for about half a second. The HUD pill turns cyan (**ACTIVE**). Relax your hand, then point.
 - **To stop:** hold both palms up (sleep), press **Esc Esc** (emergency stop), or press **Ctrl+Alt+Q** (quit).
-- The log is written to `%APPDATA%\Vectorector.log`.
+- The log is written to `%APPDATA%\Vector\vector.log`.
 
 ## Installation
 
