@@ -33,25 +33,28 @@ def catmull_rom(points: list[tuple[float, float]], samples_per_seg: int = 8,
     if len(p) < 3:
         return p
     p = np.vstack([2 * p[0] - p[1], p, 2 * p[-1] - p[-2]])
-    out = [p[1]]
-    for i in range(1, len(p) - 2):
-        p0, p1, p2, p3 = p[i - 1], p[i], p[i + 1], p[i + 2]
+    # All segments and samples at once (Barry-Goldman pyramid, vectorised):
+    # orders of magnitude faster than a per-point Python loop.
+    p0, p1, p2, p3 = p[:-3], p[1:-2], p[2:-1], p[3:]
 
-        def tj(ti, a, b):
-            return ti + max(np.linalg.norm(b - a), 1e-6) ** alpha
+    def knot(a, b):
+        return np.maximum(np.linalg.norm(b - a, axis=1), 1e-6) ** alpha
 
-        t0 = 0.0
-        t1 = tj(t0, p0, p1)
-        t2 = tj(t1, p1, p2)
-        t3 = tj(t2, p2, p3)
-        for t in np.linspace(t1, t2, samples_per_seg + 1)[1:]:
-            a1 = (t1 - t) / (t1 - t0) * p0 + (t - t0) / (t1 - t0) * p1
-            a2 = (t2 - t) / (t2 - t1) * p1 + (t - t1) / (t2 - t1) * p2
-            a3 = (t3 - t) / (t3 - t2) * p2 + (t - t2) / (t3 - t2) * p3
-            b1 = (t2 - t) / (t2 - t0) * a1 + (t - t0) / (t2 - t0) * a2
-            b2 = (t3 - t) / (t3 - t1) * a2 + (t - t1) / (t3 - t1) * a3
-            out.append((t2 - t) / (t2 - t1) * b1 + (t - t1) / (t2 - t1) * b2)
-    return np.asarray(out)
+    t0 = np.zeros(len(p0))
+    t1 = t0 + knot(p0, p1)
+    t2 = t1 + knot(p1, p2)
+    t3 = t2 + knot(p2, p3)
+    u = np.linspace(0, 1, samples_per_seg + 1)[1:]
+    tt = (t1[:, None] + (t2 - t1)[:, None] * u[None, :])[:, :, None]      # (n, k, 1)
+    T0, T1, T2, T3 = (x[:, None, None] for x in (t0, t1, t2, t3))
+    P0, P1, P2, P3 = (x[:, None, :] for x in (p0, p1, p2, p3))
+    a1 = (T1 - tt) / (T1 - T0) * P0 + (tt - T0) / (T1 - T0) * P1
+    a2 = (T2 - tt) / (T2 - T1) * P1 + (tt - T1) / (T2 - T1) * P2
+    a3 = (T3 - tt) / (T3 - T2) * P2 + (tt - T2) / (T3 - T2) * P3
+    b1 = (T2 - tt) / (T2 - T0) * a1 + (tt - T0) / (T2 - T0) * a2
+    b2 = (T3 - tt) / (T3 - T1) * a2 + (tt - T1) / (T3 - T1) * a3
+    c = (T2 - tt) / (T2 - T1) * b1 + (tt - T1) / (T2 - T1) * b2
+    return np.vstack([p[1][None, :], c.reshape(-1, 2)])
 
 
 class Canvas:
@@ -67,6 +70,7 @@ class Canvas:
         self.max_undo = max_undo
         self.version = 0            # bumps on every change (render cache key)
         self.lock = threading.RLock()   # vision thread writes, UI thread reads
+        self._geom_cache: dict = {}
 
     @property
     def color(self) -> str:
@@ -151,3 +155,22 @@ class Canvas:
 
     def smoothed(self, s: Stroke) -> np.ndarray:
         return catmull_rom(s.points)
+
+    def render_list(self) -> list[tuple[str, float, np.ndarray]]:
+        """Smoothed geometry for every stroke. Only point lists are copied
+        under the lock; splines are computed outside it and cached per stroke
+        (completed strokes never change, so each is computed once)."""
+        with self.lock:
+            items = [(id(s), s.color, s.width, tuple(s.points)) for s in self.strokes
+                     if len(s.points) >= 2]
+        cache = self._geom_cache
+        out, fresh = [], {}
+        for sid, color, width, pts in items:
+            key = (sid, len(pts))
+            geom = cache.get(key)
+            if geom is None:
+                geom = catmull_rom(list(pts))
+            fresh[key] = geom
+            out.append((color, width, geom))
+        self._geom_cache = fresh
+        return out

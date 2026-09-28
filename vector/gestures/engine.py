@@ -60,6 +60,9 @@ class HandCtx:
     hold_pose: Pose | None = None
     hold_fired: bool = False
     pose_hist: list = field(default_factory=list)
+    acc_hl: np.ndarray = field(default_factory=lambda: np.zeros(2))  # integrated palm travel
+    last_palm: np.ndarray | None = None
+    rc_fired: bool = False
     tip_hist: History = field(default_factory=lambda: History(span_s=0.6))    # index tip, norm
     palm_hist: History = field(default_factory=lambda: History(span_s=0.6))   # palm, norm
 
@@ -105,6 +108,10 @@ class GestureEngine:
         # While pinched, the pointer is "fingertip at pinch onset + palm motion
         # since": continuous with the pre-pinch cursor, immune to finger curl.
         self._anchor: tuple[np.ndarray, np.ndarray] | None = None
+        # Events produced outside update() (mode/system changes from other
+        # threads' requests) are delivered with the next frame, never dropped.
+        self._pending_events: list[GestureEvent] = []
+        self._wake_blocked = False
         self._g = g
 
     # ------------------------------------------------------------------ utils
@@ -140,12 +147,14 @@ class GestureEngine:
         return self.inter
 
     def _palm_hl(self, ctx: HandCtx) -> np.ndarray:
-        s = ctx.scale.value or ctx.f.hand_scale
-        return ctx.f.palm_center / max(1e-3, s)
+        """Palm position in hand-lengths, integrated from frame-to-frame
+        displacement. Dividing an *absolute* position by a changing hand scale
+        would turn leaning toward the camera into fake lateral travel."""
+        return ctx.acc_hl.copy()
 
     # ------------------------------------------------------------- public API
     def set_system(self, state: SystemState, t: float, events: list | None = None) -> list:
-        events = [] if events is None else events
+        events = self._pending_events if events is None else events
         if state != SystemState.ACTIVE and self.inter is not None:
             self._cancel(events, t, reason=state.value.lower())
         self.system = state
@@ -159,12 +168,15 @@ class GestureEngine:
         return events
 
     def toggle_draw(self, t: float) -> None:
+        """Any running interaction is torn down; its cleanup events (drag_end
+        via cancel, stroke_end, ...) are delivered with the next frame."""
         self.draw_mode = not self.draw_mode
-        if self.inter and self.inter.kind in ("draw", "erase", "drag", "pinch", "scroll"):
-            self._cancel([], t, "mode change")
+        if self.inter is not None:
+            self._cancel(self._pending_events, t, "mode change")
 
     def update(self, feats: list[HandFeatures], t: float) -> tuple[list[GestureEvent], Snapshot]:
-        events: list[GestureEvent] = []
+        events: list[GestureEvent] = self._pending_events
+        self._pending_events = []
         self._sync_hands(feats, t, events)
         self._choose_primary(t)
 
@@ -197,8 +209,10 @@ class GestureEngine:
             ctx.tip_hist.push(t, np.array([f.index_tip[0] / f.aspect, f.index_tip[1]]))
             ctx.palm_hist.push(t, np.array([f.palm_center[0] / f.aspect, f.palm_center[1]]))
             s = ctx.scale(f.hand_scale)
-            pos_hl = f.palm_center / max(1e-3, s)
-            ctx.pos_hl.push(t, pos_hl)
+            if ctx.last_palm is not None:
+                ctx.acc_hl = ctx.acc_hl + (f.palm_center - ctx.last_palm) / max(1e-3, s)
+            ctx.last_palm = f.palm_center.copy()
+            ctx.pos_hl.push(t, ctx.acc_hl.copy())
             ctx.velocity = ctx.vel.update(f.palm_center, t) / max(1e-3, s)
             ctx.speed = float(np.linalg.norm(ctx.velocity))
             f.velocity, f.speed = ctx.velocity, ctx.speed
@@ -263,6 +277,11 @@ class GestureEngine:
 
     def _update_wake(self, t: float, events: list) -> None:
         a = self.cfg.activation
+        if self._wake_blocked:
+            # The palms that just requested sleep must drop before a new wake.
+            if not any(c.pose and c.pose.pose == Pose.OPEN_PALM for c in self.hands.values()):
+                self._wake_blocked = False
+            return
         for tid, ctx in self.hands.items():
             q = self._palm_up_still(ctx)
             if q > 0.6 and ctx.pose and ctx.pose.pose == Pose.OPEN_PALM:
@@ -278,7 +297,8 @@ class GestureEngine:
                 self._wake_start.pop(tid, None)
 
     def _update_sleep(self, t: float, events: list) -> None:
-        if self.inter is not None or len(self.hands) < 2:
+        busy = self.inter is not None and self.inter.kind not in ("erase", "scroll", "volume")
+        if busy or len(self.hands) < 2:
             self._sleep_start = None
             return
         qs = [self._palm_up_still(c) for c in self.hands.values()]
@@ -290,7 +310,8 @@ class GestureEngine:
                 conf = combine({"geometry": min(qs), "duration": 1.0,
                                 "tracking": min(self._tracking(c) for c in self.hands.values())})
                 if conf.value >= self.cfg.threshold("sleep") and self._cool("sleep", t, self.cfg.cooldown.activate_s):
-                    self.set_system(SystemState.SLEEPING, t)
+                    self.set_system(SystemState.SLEEPING, t, events)
+                    self._wake_blocked = True
                     self._emit(events, "sleep", t, conf, None)
         else:
             self._sleep_start = None
@@ -377,10 +398,16 @@ class GestureEngine:
             return
 
         # ---- right click: middle-finger pinch, once per pose entry
-        if pose == Pose.MIDDLE_PINCH and ctx.pose.held(t) < 0.05 and self._cool("right_click", t, 0.5):
+        if pose != Pose.MIDDLE_PINCH:
+            ctx.rc_fired = False
+        elif not ctx.rc_fired and ctx.pose.held(t) <= 0.6:
+            # Wait for the evidence to mature instead of scoring the first
+            # confirmed frame (whose history is mostly the previous pose).
             conf = combine({"geometry": ctx.pose.score, "tracking": self._tracking(ctx),
-                            "stability": self._stability(ctx, Pose.MIDDLE_PINCH)})
-            self._emit(events, "right_click", t, conf, ctx.track_id, point=cursor.copy())
+                            "stability": min(1.0, self._stability(ctx, Pose.MIDDLE_PINCH) / 0.5)})
+            if conf.value >= self.cfg.threshold("click") and self._cool("right_click", t, 0.5):
+                ctx.rc_fired = True
+                self._emit(events, "right_click", t, conf, ctx.track_id, point=cursor.copy())
 
         # ---- scroll (two fingers, vertical)
         if pose == Pose.TWO and ctx.pose.held(t) >= 0.12:
@@ -487,7 +514,7 @@ class GestureEngine:
         cos = float(np.dot(v_a, v_b) / (np.linalg.norm(v_a) * np.linalg.norm(v_b) + 1e-9))
         angle = math.atan2(v_all[1], v_all[0])
         down = v_all[1] > 0 and abs(v_all[1]) > abs(v_all[0])
-        need = g.throw_min_speed * (1.3 if down else 1.0)       # minimize needs more intent
+        need = g.throw_min_speed * (g.throw_down_speed_factor if down else 1.0)
         px = [s for s in self._drag_hist.since(t_end - w)]
         v_px = regression_velocity(px) if len(px) >= 2 else np.zeros(2)
         conf = combine({
@@ -557,8 +584,11 @@ class GestureEngine:
             self._drag_hist.clear()
             self._emit(events, "drag_start", t, combine({"tracking": 1.0}), ctx.track_id,
                        point=cur.copy(), anchor=cur.copy(), rebase=True)
+            self._cursor_lock = None
         else:
+            self._emit(events, "release", t, combine({"tracking": 1.0}), it.hand)
             self.inter = None
+            self._cursor_lock = None
 
     # ----------------------------------------------------------------- scroll
     def _update_scroll(self, ctx: HandCtx, t: float) -> None:
@@ -662,7 +692,9 @@ class GestureEngine:
         if it is not None and it.kind == "draw":
             self._emit(events, "stroke_end", t, combine({"tracking": 1.0}), ctx.track_id)
             self.inter = None
-        if pose == Pose.OPEN_PALM and ctx.pose.held(t) > 0.15:
+        two_palms = len(self.hands) >= 2 and all(
+            c.pose and c.pose.pose == Pose.OPEN_PALM for c in self.hands.values())
+        if pose == Pose.OPEN_PALM and ctx.pose.held(t) > 0.15 and not two_palms:
             if self.inter is None:
                 self._start("erase", ctx, t)
             eraser = self.mapper.to_desktop(self._cursor_point(ctx, "palm"))

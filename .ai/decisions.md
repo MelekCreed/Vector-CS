@@ -25,3 +25,32 @@ Adopted from Codex critique:
 Partial disagreement (resolved by the user's spec, not synthesised):
 - Codex: disable throw-down-to-minimize initially. The spec explicitly requires it, so it stays
   enabled but with a stricter speed threshold (`throw_down_speed_factor`) and is configurable.
+
+## 2026-09-28 — Implementation decisions (Claude, writer)
+- Swipes require pause-then-flick (>=100 ms sustained stillness within 0.35 s before the
+  stroke) and the stroke-minimum pose score; measured false swipes 24 -> 1 per ~12 simulated
+  minutes of adversarial motion (scripts/false_positive_bench.py).
+- While pinched, the pointer is `fingertip_at_onset + (palm - palm_at_onset)`; a decaying
+  source-switch offset caused a ~400 px jump at drag start (found via offscreen HUD render,
+  guarded by test_pinch_onset_does_not_move_cursor_or_window).
+- Emergency stop latches inside the actuator (arm() refuses until explicit unlatch) and
+  tick/disarm are serialised: closes a race where the vision thread could re-arm after Esc Esc.
+- Learned models (GRU/TCN) are optional; adoption only if they beat the deterministic engine on
+  leave-one-session-out real recordings. Synthetic smoke run: engine 120/120, GRU/TCN 118/120,
+  so nothing adopted. Real-data benchmark pending the user's recordings.
+- Codex `exec review --base` cannot take a custom prompt; the handoff lives in
+  .ai/handoffs/002-final-review.md inside the repo for the reviewer to read.
+
+## 2026-09-28 — Final review (handoff 002; Codex reviewed, Claude fixed)
+Codex `exec review --base review-base` (fresh read-only session) reported 9 findings; all
+accepted, no rebuttal round needed. Fixes + one regression test each
+(tests/test_review_regressions.py, verified failing on the pre-fix commit):
+- [P1] stale re-arm could undo a newer emergency stop -> stop generation check
+- [P1] held sleep palms re-woke the system -> wake blocked until palms drop
+- [P2] right click scored first-frame evidence -> emit once evidence matures
+- [P2] resize ending without drag kept cursor/target locks -> release event + clear
+- [P2] draw-mode eraser blocked sleep -> passive interactions don't block sleep
+- [P2] draw toggle dropped teardown events -> queued pending events
+- [P2] depth change manufactured travel -> integrate scale-normalised displacement
+- [P2] middle_pinch / shaka bindings ignored -> routed through binding resolution
+- [P2] spline recomputed under lock every repaint -> vectorised + cached outside lock

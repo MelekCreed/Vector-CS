@@ -150,9 +150,7 @@ class IntentEngine:
             self._lock = None
             return
         if k == "right_click":
-            if self._gate(ev, "right_click"):
-                self._cmd("click", ev.t, ev.interaction, point=ev.data["point"], button="right")
-                self._record(ev, "right_click", True)
+            self._bound_action(ev, snap)
             return
         if k == "release":
             self._lock = None
@@ -265,11 +263,16 @@ class IntentEngine:
         if not is_valid_action(action):
             self._record(ev, action, False, "unknown action in config")
             return
-        if ev.kind == "volume_step":
+        if ev.kind == "volume_step" and action == "volume":
             # Steps are rate-limited by hand travel, not by the media cooldown.
             if ev.confidence.value >= self.cfg.threshold("media"):
                 self._cmd("keys", ev.t, chord="volume_up" if ev.data["direction"] > 0 else "volume_down")
                 self._record(ev, "volume +" if ev.data["direction"] > 0 else "volume -", True)
+            return
+        if ev.kind == "right_click" and action == "right_click":
+            if self._gate(ev, "right_click"):
+                self._cmd("click", ev.t, ev.interaction, point=ev.data["point"], button="right")
+                self._record(ev, "right_click", True)
             return
         if not self._gate(ev, action):
             return
@@ -305,7 +308,9 @@ class IntentEngine:
             if self.on_toggle_draw:
                 self.on_toggle_draw(t)
         elif action == "right_click":
-            pass
+            p = self.last_motion.cursor if self.last_motion is not None else None
+            if p is not None:
+                self._cmd("click", t, ev.interaction, point=p, button="right")
         elif action in ("maximize_foreground", "minimize_foreground"):
             fg = self.backend.foreground()
             if fg:

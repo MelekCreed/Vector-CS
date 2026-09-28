@@ -82,6 +82,7 @@ class VisionWorker(threading.Thread):
         self._requests: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._running = True
         self.disabled = False           # set by the failsafe hook thread; sticky until re-arm
+        self._stop_generation = 0       # bumped by every emergency stop
 
     # ---------------------------------------------------- cross-thread API
     def request(self, fn: Callable[[], None]) -> None:
@@ -91,11 +92,19 @@ class VisionWorker(threading.Thread):
     def emergency_stop(self) -> None:
         """Called from the keyboard-hook thread. Flag first, then disarm, so the
         vision thread can never re-arm the actuator in between."""
+        self._stop_generation += 1
         self.disabled = True
         self.actuator.disarm("failsafe", latch=True)
 
     def rearm(self) -> None:
+        """Only re-arms the stop that was current when the user pressed the
+        hotkey: a re-arm queued *before* a newer emergency stop is discarded."""
+        seen = self._stop_generation
+
         def _do():
+            if seen != self._stop_generation:
+                log.warning("stale re-arm request ignored (a newer emergency stop happened)")
+                return
             self.disabled = False
             self.actuator.unlatch()
             nxt = SystemState.SLEEPING if self.cfg.activation.require_activation else SystemState.ACTIVE

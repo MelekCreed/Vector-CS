@@ -81,6 +81,7 @@ class GestureConfig:
     throw_min_speed: float = 2.4   # hand-lengths / s at release
     throw_window_s: float = 0.12   # velocity averaged over this window before release
     throw_project_s: float = 0.28
+    throw_down_speed_factor: float = 1.3   # minimize needs a more deliberate throw
     swipe_min_speed: float = 2.2
     swipe_min_distance: float = 0.9
     swipe_max_duration_s: float = 0.6

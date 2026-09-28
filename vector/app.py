@@ -158,8 +158,7 @@ def export_drawing(cfg: Config, canvas, overlay, desktop) -> Path | None:
     from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPen
     from PySide6.QtCore import Qt
 
-    with canvas.lock:
-        strokes = [(s.color, s.width, canvas.smoothed(s)) for s in canvas.strokes if len(s.points) >= 2]
+    strokes = canvas.render_list()
     if not strokes:
         log.info("nothing to export")
         return None

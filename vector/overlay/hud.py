@@ -158,8 +158,7 @@ class HudPainter:
     # --------------------------------------------------------------- canvas
     def _canvas(self, p: QPainter, w: OverlayWindow) -> None:
         cv: Canvas = self.c.canvas
-        with self.c.canvas_lock:
-            strokes = [(s.color, s.width, cv.smoothed(s)) for s in cv.strokes if len(s.points) >= 2]
+        strokes = cv.render_list()
         if not strokes:
             return
         p.setBrush(Qt.NoBrush)              # paths must never be filled

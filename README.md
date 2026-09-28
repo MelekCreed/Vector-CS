@@ -220,9 +220,9 @@ Measured on the development machine: i7-1355U laptop, Iris Xe, integrated webcam
 | Intent | < 0.1 ms |
 | Window hit test (z-order walk) | 1.5 ms median |
 | `SetWindowPos` (async) | 0.25 ms median |
-| Actuator loop | 113–120 Hz |
-| HUD paint (per monitor) | ~4 ms mean |
-| Capture → intent (vision end-to-end) | ~50 ms mean with the UI running |
+| Actuator loop | 113–120 Hz while armed · 20 Hz idle (to leave CPU for inference) |
+| HUD paint (per monitor) | ~3–4 ms mean; stroke splines cached (1,000-point spline: 8 ms once, then free) |
+| Capture → intent (vision end-to-end) | ~60 ms mean with the HUD running and no hand in view (palm-detector worst case); lower while tracking |
 | Accidental commands, adversarial synthetic motion | **1 in 11.5 simulated minutes**; zero clicks, drags, throws or holds (`scripts/false_positive_bench.py`) |
 
 Inference releases the Python GIL (measured: a 240 Hz thread never stalled over 10 ms during inference), so the pipeline uses threads, not processes. The debug view shows per-stage latency live (mean / p95).
@@ -255,7 +255,7 @@ python -m vector --demo               # captions for recording videos
 python -m vector config               # print effective config + its path
 python -m vector clips                # list recorded gesture clips
 python -m vector replay CLIP.jsonl.gz # run a recording through the engine
-python -m pytest                      # 130+ tests
+python -m pytest                      # 140 tests
 ```
 
 ### Hotkeys
@@ -324,7 +324,7 @@ By the adoption rule, the deterministic engine stays in charge.
 
 ## Testing
 
-The test suite has 130+ tests and runs in about 6 seconds. It never needs a webcam:
+The test suite has 140 tests and runs in about 20 seconds. It never needs a webcam:
 
 - **Synthetic kinematic hand.** `vector/sim/synthetic_hand.py` produces MediaPipe-layout landmarks for any pose, position, rotation or handedness. Scripted scenarios (`vector/sim/scenario.py`) add noise and dropouts and drive the *full* pipeline: clicks, drags, throws, resize, swipes, scroll inertia, holds, volume, draw mode, sleep/wake.
 - **Negative tests.** Everyday motion must produce no commands. Disabled means disabled. The interaction owner is exclusive. Tracking loss mid-drag cancels without a click or throw. The return stroke of a swipe is ignored. A regression test guards the pinch-onset pointer jump.
@@ -371,4 +371,9 @@ The test suite has 130+ tests and runs in about 6 seconds. It never needs a webc
 
 ## Development
 
-Built by Claude Code (writer). OpenAI Codex CLI was consulted as a read-only reviewer for the architecture and final review, following [AI_TEAM.md](AI_TEAM.md). Decisions and handoffs are logged in [`.ai/`](.ai/).
+Built by Claude Code (writer and tester). OpenAI Codex CLI was consulted as a read-only reviewer in fresh, context-less sessions, following [AI_TEAM.md](AI_TEAM.md):
+
+- **Architecture critique.** Most recommendations were adopted, and one disagreement was resolved by the spec.
+- **Final code review.** It reported 9 findings, including 2 safety issues: a stale re-arm could undo an emergency stop, and held sleep palms caused a sleep/wake loop. All 9 were fixed, and each has a regression test that fails on the pre-fix code.
+
+Decisions and handoffs are logged in [`.ai/`](.ai/).
