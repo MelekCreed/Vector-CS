@@ -50,3 +50,48 @@ def test_full_calibration_flow_with_synthetic_hand():
     c = cfg.cursor
     assert (c.region_x1 - c.region_x0) == pytest.approx(0.3, abs=0.02)
     assert (c.region_y1 - c.region_y0) == pytest.approx(0.4, abs=0.02)
+
+
+def _run_calibration(offsets, cfg=None):
+    """Point at the four targets with the given hand positions (x, y)."""
+    cfg = cfg or Config()
+    pipe = GesturePipeline(cfg, DESK)
+    cal = Calibrator(cfg)
+    sc = Scenario(noise=0.001)
+    t = 0.0
+    sc.key("R", t, HandPose("point", x=0.5, y=0.5))
+    t += 1.6
+    for x, y in offsets:
+        pos = HandPose("point", x=x, y=y)
+        sc.key("R", t, pos).key("R", t + 0.3, pos).key("R", t + 1.5, pos)
+        t += 1.6
+    for tt, dets in sc.frames():
+        pipe.process(dets, tt, sc.aspect)
+        st = cal.update(pipe.features, tt)
+    return cal, cfg
+
+
+def test_tiny_hand_travel_is_rejected_then_expanded():
+    """Regression: a real first launch accepted a 9%-wide region (barely moving
+    the hand), which makes the cursor hypersensitive."""
+    tiny = [(0.50 + 0.1 * u, 0.40 + 0.3 * v) for u, v in TARGET_FRACS]   # ~0.1-wide region
+    cal, cfg = _run_calibration(tiny)
+    st = cal.state
+    assert st.step != Step.DONE and st.attempts == 1 and "further" in st.message
+    cal2, cfg2 = _run_calibration(tiny + tiny)          # second small attempt
+    assert cal2.state.step == Step.DONE and cal2.state.expanded
+    c = cfg2.cursor
+    assert c.region_x1 - c.region_x0 >= 0.22 - 1e-9
+
+
+def test_next_target_needs_hand_travel():
+    """A hand parked in one spot must not satisfy all four targets."""
+    parked = [(0.5, 0.5)] * 4
+    cal, _ = _run_calibration(parked)
+    assert cal.state.step == Step.TARGETS and cal.state.target == 1
+
+
+def test_mirrored_samples_rejected():
+    backwards = [(0.7 - 0.4 * u, 0.2 + 0.4 * v) for u, v in TARGET_FRACS]
+    with pytest.raises(ValueError):
+        region_from_samples(backwards)

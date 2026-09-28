@@ -24,6 +24,9 @@ TARGET_FRACS = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)]
 DWELL_S = 0.9
 STILL_HL_S = 0.35          # fingertip speed (hand-lengths/s) that counts as still
 HAND_S = 1.2
+MOVE_BETWEEN = 0.05        # fingertip must travel this far (norm) before the next target counts
+MIN_W, MIN_H = 0.22, 0.16  # smallest believable region (normalised camera units)
+MAX_ATTEMPTS = 2
 
 
 class Step(str, enum.Enum):
@@ -45,6 +48,9 @@ def region_from_samples(samples: list[tuple[float, float]], margin: float = 0.0
         (a, b), *_ = np.linalg.lstsq(A, s[:, axis], rcond=None)
         if abs(b) < 0.05:
             raise ValueError("targets too close together in camera space; move more")
+        if b < 0:
+            # The view is mirrored, so pointing further right must move the tip right.
+            raise ValueError("hand moved opposite to the targets")
         lo, hi = a, a + b
         out.append((min(lo, hi) - margin, max(lo, hi) + margin))
     (x0, x1), (y0, y1) = out
@@ -62,6 +68,8 @@ class CalibrationState:
     dominant: str | None = None
     hand_scales: list = field(default_factory=list)
     result: tuple | None = None
+    attempts: int = 0
+    expanded: bool = False
 
 
 class Calibrator:
@@ -70,6 +78,7 @@ class Calibrator:
         self.state = CalibrationState()
         self._since: float | None = None
         self._buf: list[np.ndarray] = []
+        self._last_sample: np.ndarray | None = None
 
     def target_px(self, desktop) -> tuple[float, float] | None:
         if self.state.step != Step.TARGETS:
@@ -103,13 +112,19 @@ class Calibrator:
             return st
         tip = np.array([hand.index_tip[0] / hand.aspect, hand.index_tip[1]])
         still = hand.speed < STILL_HL_S if hand.speed else True
+        if self._last_sample is not None and np.linalg.norm(tip - self._last_sample) < MOVE_BETWEEN:
+            # Still parked on the previous target: wait for the hand to travel.
+            self._since, st.progress, self._buf = None, 0.0, []
+            return st
         if still:
             if self._since is None:
                 self._since, self._buf = t, []
             self._buf.append(tip)
             st.progress = min(1.0, (t - self._since) / DWELL_S)
             if st.progress >= 1.0:
-                st.samples.append(tuple(np.median(np.array(self._buf), axis=0)))
+                sample = np.median(np.array(self._buf), axis=0)
+                st.samples.append(tuple(sample))
+                self._last_sample = sample
                 st.hand_scales.append(hand.hand_scale)
                 st.target += 1
                 self._since, st.progress, self._buf = None, 0.0, []
@@ -119,13 +134,33 @@ class Calibrator:
             self._since, st.progress, self._buf = None, 0.0, []
         return st
 
+    def _retry(self, why: str) -> None:
+        st = self.state
+        st.attempts += 1
+        st.samples, st.hand_scales, st.target = [], [], 0
+        self._last_sample = None
+        st.message = f"{why} Let's try again."
+
     def _finish(self) -> None:
         st = self.state
         try:
-            st.result = region_from_samples(st.samples)
+            region = region_from_samples(st.samples)
         except ValueError as exc:
-            st.samples, st.target, st.message = [], 0, f"{exc}. Let's try again."
+            self._retry(f"Hmm, {exc}.")
             return
+        x0, y0, x1, y1 = region
+        if (x1 - x0 < MIN_W or y1 - y0 < MIN_H) and st.attempts + 1 < MAX_ATTEMPTS:
+            self._retry("Move your whole hand further toward each target.")
+            return
+        if x1 - x0 < MIN_W or y1 - y0 < MIN_H:
+            # Second small attempt: keep the measured centre, enforce a sane size.
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            w, h = max(MIN_W, x1 - x0), max(MIN_H, y1 - y0)
+            cx = float(np.clip(cx, w / 2, 1 - w / 2))
+            cy = float(np.clip(cy, h / 2, 1 - h / 2))
+            region = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+            st.expanded = True
+        st.result = region
         c = self.cfg.cursor
         c.region_x0, c.region_y0, c.region_x1, c.region_y1 = st.result
         self.cfg.dominant_hand = st.dominant or self.cfg.dominant_hand
