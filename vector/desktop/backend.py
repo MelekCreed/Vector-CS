@@ -33,6 +33,9 @@ class Win32Backend:
     def process_name(self, hwnd: int) -> str:
         return W.process_name(W.pid_of(hwnd)) if hwnd else ""
 
+    def icon(self, hwnd: int) -> int:
+        return W.icon_handle(hwnd)
+
 
 @dataclass
 class FakeWindow:
@@ -81,6 +84,9 @@ class FakeBackend:
     def process_name(self, hwnd):
         w = self._get(hwnd)
         return w.process if w else ""
+
+    def icon(self, hwnd):
+        return 0
 
     # mutation helpers used by a fake actuator
     def focus(self, hwnd):

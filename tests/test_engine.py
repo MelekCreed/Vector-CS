@@ -16,7 +16,7 @@ from vector.sim.synthetic_hand import HandPose
 
 DESK = VirtualDesktop([Monitor("M", Rect(0, 0, 1920, 1080), Rect(0, 0, 1920, 1040), primary=True)])
 COMMANDS = {"click", "right_click", "throw", "swipe", "hold", "volume_step", "drag_start",
-            "pinch_start", "resize_start", "wake", "sleep"}
+            "pinch_start", "resize_start", "wake", "sleep", "carousel_select"}
 
 
 def make(active=False, **cfg_over) -> GesturePipeline:

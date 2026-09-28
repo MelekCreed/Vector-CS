@@ -136,10 +136,21 @@ def air_drawing(sc):
     return sc
 
 
+def app_carousel(sc):
+    P = HandPose
+    sc.key("R", 0.0, P("point", x=0.50, y=0.66)).key("R", 0.4, P("open", x=0.50, y=0.64))
+    sc.key("R", 1.6, P("open", x=0.50, y=0.64)).key("R", 2.3, P("open", x=0.58, y=0.64))
+    sc.key("R", 3.0, P("open", x=0.58, y=0.64))
+    return sc
+
+
 def simulate(cfg, frames_wanted, scene=grab_and_throw, draw=False):
     backend = FakeBackend([
         FakeWindow(1, "Browser — vector.dev", Rect(420, 150, 820, 520), "chrome.exe"),
         FakeWindow(2, "Terminal", Rect(120, 420, 560, 330), "wt.exe"),
+        FakeWindow(3, "Spotify — Midnight City", Rect(900, 480, 500, 300), "Spotify.exe"),
+        FakeWindow(4, "Figma — Vector HUD", Rect(200, 90, 600, 380), "Figma.exe"),
+        FakeWindow(5, "Notes", Rect(1100, 100, 380, 300), "Notepad.exe"),
     ])
     canvas = Canvas(cfg.draw.colors, 6.0)
     pipe = GesturePipeline(cfg, DESK)
@@ -196,7 +207,8 @@ def main() -> int:
     cfg = Config()
     cfg.debug = True
     runs = [("throw", grab_and_throw, False, {"hover": 1.1, "pinch": 1.45, "drag": 2.3, "throw": 3.0}),
-            ("draw", air_drawing, True, {"draw": 3.25})]
+            ("draw", air_drawing, True, {"draw": 3.25}),
+            ("carousel", app_carousel, False, {"carousel": 2.8})]
     gif_frames = []
     for name, scene, draw, stills in runs:
         for t, ui, windows, canvas in simulate(cfg, {}, scene, draw):

@@ -20,6 +20,7 @@ Vector watches your hands through the webcam and treats them like a trackpad tha
 | Release the pinch while moving fast | **Throw:** snap left or right, maximize (up), minimize (down), or jump to the monitor you aimed at |
 | Pinch a window with both hands and pull apart | Two-hand resize in width and height, around the midpoint |
 | Open palm, swipe sideways | Next / previous application |
+| Hold one open palm still, move sideways, pinch | **App carousel**: browse open apps, pinch to switch (a fist closes it) |
 | Two fingers, move up or down | Smooth scrolling with inertia |
 | Two fingers, flick sideways | Browser back / forward (next / previous track outside browsers) |
 | Hold a fist | Play / pause |
@@ -37,6 +38,7 @@ Vector watches your hands through the webcam and treats them like a trackpad tha
 <img src="docs/images/hud-drag.png" width="49%" alt="Grabbed window with lock glow">
 <img src="docs/images/hud-draw.png" width="49%" alt="Air drawing with spline smoothing">
 </p>
+<p align="center"><img src="docs/images/hud-carousel.png" width="70%" alt="App carousel"></p>
 
 ## Demo
 
@@ -74,6 +76,7 @@ Every gesture is a **temporal** pattern, never a single frame. The engine tracks
 | Swipe | ≥ 0.9 hand-lengths, peak ≥ 2.2 hl/s, horizontal ≥ 1.8× vertical, < 0.6 s | Requires a **pause-then-flick** (≥ 100 ms still first), the pose held crisply for the whole stroke, cooldown, and return-stroke lockout |
 | Scroll | Two-finger pose held 0.12 s, vertical motion | Dead zone, vertical dominance, inertia decays |
 | Holds | Fist / three fingers still for 0.45 / 0.7 s | Fires once per entry; moving hands never count |
+| Carousel | One open palm still for 0.9 s, then sideways travel (0.45 hand-lengths per app) | One hand only (two palms mean sleep); off in draw mode; hysteresis between apps; switches only on pinch |
 | Wake | Upright open palm, facing the camera, still, 0.6 s | Needs a *neutral* pose afterwards before any command |
 | Sleep | Both palms, still, 0.8 s | Only while nothing is being manipulated |
 
@@ -227,9 +230,24 @@ Measured on the development machine: i7-1355U laptop, Iris Xe, integrated webcam
 
 Inference releases the Python GIL (measured: a 240 Hz thread never stalled over 10 ms during inference), so the pipeline uses threads, not processes. The debug view shows per-stage latency live (mean / p95).
 
+## Launch
+
+**Double-click `launch.bat`.** It creates the Python environment and downloads the hand model on the first run, then starts Vector with no console window. Or, from a terminal in the project folder:
+
+```bash
+launch.bat --debug
+```
+
+`--debug` adds the developer window. Run `launch.bat --demo` for demo captions, or `launch.bat calibrate` to redo calibration.
+
+- **First launch** runs calibration: raise the hand you point with, then point at the four targets and hold still on each.
+- **To start controlling:** raise one open palm, facing the camera, and hold it still for about half a second. The HUD pill turns cyan (**ACTIVE**). Relax your hand, then point.
+- **To stop:** hold both palms up (sleep), press **Esc Esc** (emergency stop), or press **Ctrl+Alt+Q** (quit).
+- The log is written to `%APPDATA%\Vectorector.log`.
+
 ## Installation
 
-Requirements: Windows 10/11, Python 3.11+, a webcam.
+Requirements: Windows 10/11, Python 3.11+, a webcam. `launch.bat` does all of this for you; the manual steps are:
 
 ```bash
 git clone https://github.com/MelekCreed/Vector-CS.git
@@ -255,7 +273,7 @@ python -m vector --demo               # captions for recording videos
 python -m vector config               # print effective config + its path
 python -m vector clips                # list recorded gesture clips
 python -m vector replay CLIP.jsonl.gz # run a recording through the engine
-python -m pytest                      # 140 tests
+python -m pytest                      # 146 tests
 ```
 
 ### Hotkeys
@@ -324,7 +342,7 @@ By the adoption rule, the deterministic engine stays in charge.
 
 ## Testing
 
-The test suite has 140 tests and runs in about 20 seconds. It never needs a webcam:
+The test suite has 146 tests and runs in about 20 seconds. It never needs a webcam:
 
 - **Synthetic kinematic hand.** `vector/sim/synthetic_hand.py` produces MediaPipe-layout landmarks for any pose, position, rotation or handedness. Scripted scenarios (`vector/sim/scenario.py`) add noise and dropouts and drive the *full* pipeline: clicks, drags, throws, resize, swipes, scroll inertia, holds, volume, draw mode, sleep/wake.
 - **Negative tests.** Everyday motion must produce no commands. Disabled means disabled. The interaction owner is exclusive. Tracking loss mid-drag cancels without a click or throw. The return stroke of a swipe is ignored. A regression test guards the pinch-onset pointer jump.
@@ -348,7 +366,8 @@ The test suite has 140 tests and runs in about 20 seconds. It never needs a webc
 - [ ] Tune thresholds from recorded real-hand sessions; publish per-gesture accuracy
 - [ ] Record the live demo video for this README
 - [ ] Benchmark GRU/TCN against the engine on real clips; adopt per gesture only where it wins
-- [ ] Application carousel (hold palm, move to browse, pinch to pick) with DWM live thumbnails
+- [x] Application carousel (hold palm, move to browse, pinch to pick)
+- [ ] DWM live window thumbnails in the carousel (app icons today)
 - [ ] Native "smart" drag mode: pinch-drag in page content performs a mouse drag (select text, move files), while pinch on title bars moves windows
 - [ ] Per-application binding profiles
 - [ ] GPU inference / higher frame-rate cameras

@@ -56,6 +56,8 @@ class Feedback:
     toast: tuple | None = None          # (t, text)
     draw_ops: list = field(default_factory=list)
     history: list[HistoryItem] = field(default_factory=list)
+    # App carousel: {"t", "items": [(hwnd, title, process, hicon)], "index"}
+    carousel: dict | None = None
 
 
 @dataclass
@@ -173,7 +175,19 @@ class IntentEngine:
             if self._lock:
                 self._lock.state = "grab"
             return
+        if k == "carousel_open":
+            self._carousel_open(ev)
+            return
+        if k == "carousel_select":
+            self._carousel_select(ev)
+            return
+        if k == "carousel_close":
+            self.fb.carousel = None
+            self._record(ev, "carousel closed", True)
+            return
         if k == "cancel":
+            if ev.data.get("what") == "carousel":
+                self.fb.carousel = None
             self._release_lock(ev.t)
             self._record(ev, "cancel", True, ev.data.get("reason", ""))
             return
@@ -246,6 +260,38 @@ class IntentEngine:
         lock.state, lock.resize_start = "resize", inf.frame
         lock.resize_p0 = tuple(np.asarray(p) for p in ev.data["points"])
         self._record(ev, "resize", True)
+
+    # ----------------------------------------------------------- carousel
+    def _carousel_open(self, ev: GestureEvent) -> None:
+        windows = [w for w in self.backend.switchable() if self.backend.is_valid_target(w)]
+        if len(windows) < 2:
+            self._record(ev, "carousel", False, "fewer than two apps to switch between")
+            return
+        items = []
+        for h in windows[:12]:
+            inf = self.backend.info(h)
+            if inf is None:
+                continue
+            items.append((h, inf.title, inf.process.rsplit(".", 1)[0], self.backend.icon(h)))
+        # Start on the previous app (index 1), like Alt+Tab.
+        self.fb.carousel = {"t": ev.t, "items": items, "index": 1 % len(items)}
+        self._record(ev, "carousel", True)
+
+    def _carousel_select(self, ev: GestureEvent) -> None:
+        car, self.fb.carousel = self.fb.carousel, None
+        if car is None or not car["items"]:
+            return
+        idx = (1 + ev.data.get("offset", 0)) % len(car["items"])
+        hwnd, title = car["items"][idx][0], car["items"][idx][1]
+        if not self.backend.is_valid_target(hwnd):
+            self._record(ev, "switch", False, "window closed")
+            return
+        if ev.confidence.value < self.cfg.threshold("click"):
+            self._record(ev, "switch", False, "low confidence")
+            return
+        self._cmd("focus", ev.t, ev.interaction, hwnd=hwnd)
+        self._record(ev, f"switch to {title[:40]}", True)
+        self.fb.toast = (ev.t, title[:48] or "Switched")
 
     def _release_lock(self, t: float) -> None:
         if self._lock is not None:
@@ -356,8 +402,13 @@ class IntentEngine:
             resize_rect=resize_rect_,
             scroll_velocity=snap.scroll_velocity if snap.system == SystemState.ACTIVE else 0.0)
 
-        # Hover target (throttled: EnumWindows walk is ~1 ms).
         fb = self.fb
+        car = fb.carousel
+        if car is not None and snap.carousel_offset is not None and car["items"]:
+            car["index"] = (1 + snap.carousel_offset) % len(car["items"])
+        elif car is not None and snap.owner != "carousel":
+            fb.carousel = None                     # engine left the carousel some other way
+        # Hover target (throttled: EnumWindows walk is ~1 ms).
         if lock is not None:
             fb.lock_state, fb.lock_title = lock.state, lock.title
             fb.lock_frame = resize_rect_ or lock.frame

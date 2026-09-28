@@ -146,6 +146,8 @@ class HudPainter:
         self._resize_guides(p, w, snap)
         self._wake_rings(p, w, ui, snap)
         self._cursor(p, w, ui, snap, now)
+        if w.monitor.primary and fb is not None and fb.carousel is not None:
+            self._carousel(p, w, fb.carousel, now)
         if w.monitor.primary:
             self._status_pill(p, w, snap, ui, now)
             if self.c.cfg.overlay.show_skeleton:
@@ -329,7 +331,7 @@ class HudPainter:
 
     # --------------------------------------------------------------- cursor
     def _cursor(self, p, w, ui, snap, now) -> None:
-        if not snap.cursor_visible or snap.cursor is None:
+        if not snap.cursor_visible or snap.cursor is None or snap.primary_mode == HandMode.CAROUSEL:
             return
         pos = self.c.cursor_px(snap)
         if pos is None or not w.on_me(*pos):
@@ -500,6 +502,68 @@ class HudPainter:
             p.setBrush(qc(self.pal.accent, 1))
             p.drawEllipse(c, 6, 6)
             self._ring(p, c, 42, st.progress, self.pal.accent, 3)
+
+    # ------------------------------------------------------------ carousel
+    def _icon(self, hicon: int):
+        from PySide6.QtGui import QImage, QPixmap
+        cache = self.__dict__.setdefault("_icons", {})
+        if hicon not in cache:
+            img = QImage.fromHICON(hicon) if hicon else QImage()
+            cache[hicon] = QPixmap.fromImage(img) if not img.isNull() else None
+        return cache[hicon]
+
+    def _carousel(self, p, w, car, now) -> None:
+        items, sel = car["items"], car["index"]
+        n = len(items)
+        age = max(0.0, now - car["t"])
+        a = min(1.0, age / 0.15)                       # fade/slide in
+        cw, ch, gap = 190.0, 132.0, 18.0
+        visible = min(n, 5)
+        half = visible // 2
+        order = [(sel + k) % n for k in range(-half, visible - half)] if n > visible else list(range(n))
+        total = len(order) * cw + (len(order) - 1) * gap
+        x0 = (w.width() - total) / 2
+        y0 = w.height() * 0.42 - ch / 2 + (1 - a) * 18
+        back = QRectF(x0 - 28, y0 - 46, total + 56, ch + 92)
+        p.setPen(QPen(qc("#FFFFFF", 0.07 * a), 1))
+        p.setBrush(qc(self.pal.panel, 0.80 * a))
+        p.drawRoundedRect(back, 22, 22)
+        p.setFont(self.f_small)
+        p.setPen(qc(self.pal.muted, a))
+        p.drawText(QRectF(back.left(), back.top() + 12, back.width(), 18), Qt.AlignCenter,
+                   "MOVE TO BROWSE  ·  PINCH TO OPEN  ·  FIST TO CLOSE")
+        fm = QFontMetricsF(self.f_body)
+        for slot, idx in enumerate(order):
+            hwnd, title, proc, hicon = items[idx]
+            chosen = idx == sel
+            r = QRectF(x0 + slot * (cw + gap), y0, cw, ch)
+            if chosen:
+                r = r.adjusted(-6, -6, 6, 6)
+            p.setPen(Qt.NoPen)
+            p.setBrush(qc("#FFFFFF", (0.10 if chosen else 0.04) * a))
+            p.drawRoundedRect(r, 14, 14)
+            if chosen:
+                self._glow_rect(p, r, self.pal.accent, a)
+            pix = self._icon(hicon)
+            ic = QRectF(r.center().x() - 20, r.top() + 22, 40, 40)
+            if pix is not None:
+                p.setOpacity(a if chosen else 0.7 * a)
+                p.drawPixmap(ic.toRect(), pix)
+                p.setOpacity(1.0)
+            else:
+                p.setBrush(qc(self.pal.accent, 0.25 * a))
+                p.drawRoundedRect(ic, 10, 10)
+                p.setPen(qc(self.pal.text, a))
+                p.setFont(self.f_toast)
+                p.drawText(ic, Qt.AlignCenter, (proc or title or "?")[:1].upper())
+            p.setFont(self.f_body)
+            p.setPen(qc(self.pal.text, (1.0 if chosen else 0.7) * a))
+            p.drawText(QRectF(r.left() + 10, r.top() + 72, r.width() - 20, 20), Qt.AlignCenter,
+                       fm.elidedText(title or proc, Qt.ElideRight, r.width() - 20))
+            p.setFont(self.f_small)
+            p.setPen(qc(self.pal.accent if chosen else self.pal.muted, a))
+            p.drawText(QRectF(r.left() + 10, r.top() + 96, r.width() - 20, 16), Qt.AlignCenter,
+                       (proc or "").upper()[:22])
 
     # --------------------------------------------------------------- demo
     def _demo_caption(self, p, w, demo, now) -> None:

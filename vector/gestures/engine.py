@@ -63,6 +63,7 @@ class HandCtx:
     acc_hl: np.ndarray = field(default_factory=lambda: np.zeros(2))  # integrated palm travel
     last_palm: np.ndarray | None = None
     rc_fired: bool = False
+    carousel_start: float | None = None
     tip_hist: History = field(default_factory=lambda: History(span_s=0.6))    # index tip, norm
     palm_hist: History = field(default_factory=lambda: History(span_s=0.6))   # palm, norm
 
@@ -383,6 +384,10 @@ class GestureEngine:
             self._update_draw(ctx, t, events, cursor)
             return
 
+        if it is not None and it.kind == "carousel":
+            self._update_carousel(ctx, t, events)
+            return
+
         pose = ctx.pose.pose
         # ---- pinch begins (index pinch)
         if ctx.pinch_rose:
@@ -433,6 +438,59 @@ class GestureEngine:
         self._update_swipes(ctx, t, events)
         # ---- holds (fist / three)
         self._update_holds(ctx, t, events)
+        # ---- app carousel (single still open palm)
+        self._update_carousel_hold(ctx, t, events)
+
+    # --------------------------------------------------------------- carousel
+    def _update_carousel_hold(self, ctx: HandCtx, t: float, events: list) -> None:
+        g = self._g
+        ok = (g.carousel_enabled and self.inter is None and len(self.hands) == 1
+              and ctx.pose.pose == Pose.OPEN_PALM and ctx.pose.held(t) >= 0.1
+              and ctx.speed < g.hold_still_speed)
+        if not ok:
+            ctx.carousel_start = None
+            return
+        if ctx.carousel_start is None:
+            ctx.carousel_start = t
+            return
+        if t - ctx.carousel_start < g.carousel_hold_s:
+            return
+        ctx.carousel_start = None
+        conf = combine({"geometry": ctx.pose.score, "duration": 1.0,
+                        "stability": self._stability(ctx, Pose.OPEN_PALM),
+                        "tracking": self._tracking(ctx)})
+        if conf.value < self.cfg.threshold("app_switch"):
+            return
+        self._end_passive(t)
+        self._start("carousel", ctx, t, palm0=self._palm_hl(ctx))
+        self.inter.extra.update(offset=0, lost_since=None)
+        self._emit(events, "carousel_open", t, conf, ctx.track_id)
+
+    def _update_carousel(self, ctx: HandCtx, t: float, events: list) -> None:
+        it = self.inter
+        g = self._g
+        if ctx.pinch_rose:                         # pinch picks the highlighted app
+            conf = combine({"geometry": pinch_closeness(ctx.f.pinch_ratio),
+                            "tracking": self._tracking(ctx)})
+            self._emit(events, "carousel_select", t, conf, ctx.track_id, offset=it.extra["offset"])
+            self.inter = None
+            return
+        pose = ctx.pose.pose
+        if pose in (Pose.OPEN_PALM, Pose.NONE) or ctx.pinch_on:
+            it.extra["lost_since"] = None
+        else:                                       # fist / other pose: dismiss
+            since = it.extra["lost_since"] = it.extra["lost_since"] or t
+            if t - since > 0.35:
+                self._emit(events, "carousel_close", t, combine({"tracking": 1.0}), ctx.track_id)
+                self.inter = None
+                return
+        if ctx.pinch_on:
+            return                                  # don't browse while closing the pinch
+        dx = float(self._palm_hl(ctx)[0] - it.palm0[0])
+        off = it.extra["offset"]
+        # Hysteresis: only move to a new app once well past the boundary.
+        if abs(dx - off * g.carousel_step) > 0.65 * g.carousel_step:
+            it.extra["offset"] = int(round(dx / g.carousel_step))
 
     def _end_passive(self, t: float) -> None:
         if self.inter is not None and self.inter.kind in ("scroll", "volume"):
@@ -670,6 +728,8 @@ class GestureEngine:
             ctx.hold_start = t if pose in HOLD_POSES else None
 
     def _hold_progress(self, ctx: HandCtx, t: float) -> tuple[float, str]:
+        if ctx.carousel_start is not None and t - ctx.carousel_start > 0.15:
+            return min(1.0, (t - ctx.carousel_start) / self._g.carousel_hold_s), "carousel"
         if ctx.hold_pose in HOLD_POSES and ctx.hold_start is not None and not ctx.hold_fired:
             need = self._g.fist_hold_s if ctx.hold_pose == Pose.FIST else self._g.three_hold_s
             return min(1.0, (t - ctx.hold_start) / need), HOLD_POSES[ctx.hold_pose]
@@ -730,6 +790,7 @@ class GestureEngine:
                 "drag": HandMode.DRAGGING, "resize": HandMode.RESIZING,
                 "scroll": HandMode.SCROLLING, "volume": HandMode.VOLUME,
                 "draw": HandMode.DRAWING, "erase": HandMode.ERASING,
+                "carousel": HandMode.CAROUSEL,
             }[it.kind]
         if ctx.pose is None:
             return HandMode.HOVERING
@@ -772,6 +833,7 @@ class GestureEngine:
             scroll_velocity=self._scroll_v if self.system == SystemState.ACTIVE else 0.0,
             wake_progress=wake, sleep_progress=sleep, neutral_required=self.neutral_required,
             throw_preview=self.throw_preview(t),
+            carousel_offset=it.extra["offset"] if it is not None and it.kind == "carousel" else None,
             confidence={"drives_cursor": float(drives and self.system == SystemState.ACTIVE
                                                and not self.neutral_required)})
 

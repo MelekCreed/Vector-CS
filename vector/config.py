@@ -93,6 +93,9 @@ class GestureConfig:
     fist_hold_s: float = 0.45
     three_hold_s: float = 0.7
     volume_step: float = 0.35      # hand-lengths per volume step
+    carousel_enabled: bool = True
+    carousel_hold_s: float = 0.9   # still open palm this long opens the app carousel
+    carousel_step: float = 0.45    # hand-lengths of sideways travel per app
     resize_min_w: int = 360
     resize_min_h: int = 240
 

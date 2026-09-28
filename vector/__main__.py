@@ -31,7 +31,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+    handlers: list[logging.Handler] = []
+    if sys.stderr is not None:                 # None under pythonw (launch.bat)
+        handlers.append(logging.StreamHandler())
+    try:
+        from logging.handlers import RotatingFileHandler
+        from vector.config import default_user_path
+        log_path = default_user_path().parent / "vector.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=2,
+                                            encoding="utf-8"))
+    except OSError:
+        pass
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, handlers=handlers,
                         format="%(asctime)s %(levelname).1s %(name)s: %(message)s", datefmt="%H:%M:%S")
     from vector.app import load_config
     cfg, cfg_path = load_config(args.config)

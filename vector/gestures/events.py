@@ -24,6 +24,7 @@ class HandMode(str, enum.Enum):
     DRAWING = "DRAWING"
     ERASING = "ERASING"
     VOLUME = "VOLUME"
+    CAROUSEL = "CAROUSEL"
 
 
 class SystemState(str, enum.Enum):
@@ -80,6 +81,7 @@ class Snapshot:
     drag_point: np.ndarray | None = None       # desktop px the dragged window follows
     resize_points: tuple[np.ndarray, np.ndarray] | None = None  # desktop px of both pinches
     scroll_velocity: float = 0.0    # wheel units / s (positive = up)
+    carousel_offset: int | None = None           # apps moved from the start selection
     wake_progress: float = 0.0
     sleep_progress: float = 0.0
     neutral_required: bool = False

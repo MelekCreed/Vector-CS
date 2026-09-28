@@ -262,6 +262,27 @@ def switchable_windows(policy: WindowPolicy) -> list[int]:
     return [h for h in z_order() if policy.is_switchable(h)]
 
 
+_proto(user32, "SendMessageTimeoutW", ctypes.c_ssize_t, H, U, wintypes.WPARAM, wintypes.LPARAM,
+       U, U, ctypes.POINTER(ctypes.c_size_t))
+_proto(user32, "GetClassLongPtrW", ctypes.c_size_t, H, I)
+
+
+def icon_handle(hwnd: int) -> int:
+    """The window's HICON (0 if none). Uses SendMessageTimeout with
+    SMTO_ABORTIFHUNG so a frozen app can never block the caller."""
+    WM_GETICON, ICON_BIG, ICON_SMALL2, SMTO_ABORTIFHUNG = 0x7F, 1, 2, 0x2
+    for which in (ICON_BIG, ICON_SMALL2):
+        res = ctypes.c_size_t(0)
+        if user32.SendMessageTimeoutW(hwnd, WM_GETICON, which, 0, SMTO_ABORTIFHUNG, 60,
+                                      ctypes.byref(res)) and res.value:
+            return int(res.value)
+    for idx in (-14, -34):                          # GCLP_HICON, GCLP_HICONSM
+        h = user32.GetClassLongPtrW(hwnd, idx)
+        if h:
+            return int(h)
+    return 0
+
+
 def foreground() -> int | None:
     return user32.GetForegroundWindow() or None
 
