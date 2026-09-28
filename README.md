@@ -250,7 +250,7 @@ launch.bat --debug
 Requirements: Windows 10/11, Python 3.11+, a webcam. `launch.bat` does all of this for you; the manual steps are:
 
 ```bash
-git clone https://github.com/MelekCreed/Vector-CS.git
+git clone https://github.com/MoallaMelek/Vector-CS.git
 cd Vector-CS
 python -m venv .venv
 .venv\Scripts\activate
